@@ -1,0 +1,14 @@
+name = "pirsch-cloudflare-pages"
+compatibility_date = "2024-01-01"  # Latest compatibility date
+
+[vars]
+# Add any default values here if needed
+
+# Worker configuration
+[placement]
+mode = "smart"
+
+# Resource limits
+[limits]
+cpu_ms = 10    # Maximum CPU time in milliseconds
+memory_mb = 128 # Maximum memory in MB

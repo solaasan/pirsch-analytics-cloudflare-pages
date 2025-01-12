@@ -1,9 +1,8 @@
 /// <reference types="@cloudflare/workers-types" />
 
 export interface PirschPluginArgs extends Record<string, unknown> {
-  websiteId: string;
-  apiToken: string;
-  domain?: string;
+  pirschClientId: string;
+  pirschClientSecret: string;
 }
 
 export default function (

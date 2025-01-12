@@ -6,6 +6,9 @@ package-lock.json
 dist/
 *.tsbuildinfo
 
+# Cloudflare
+.wrangler/
+
 # IDE
 .vscode/*
 !.vscode/settings.json
@@ -25,4 +28,18 @@ npm-debug.log*
 
 # OS
 .DS_Store
-Thumbs.db 
+Thumbs.db
+
+# TypeScript
+*.d.ts
+index.d.ts
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+.dev.vars

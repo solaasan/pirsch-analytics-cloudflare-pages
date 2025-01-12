@@ -4,23 +4,31 @@
   "description": "Cloudflare Pages plugin for Pirsch Analytics",
   "main": "dist/index.js",
   "types": "index.d.ts",
-  "files": ["dist", "index.d.ts", "tsconfig.json"],
+  "files": [
+    "dist",
+    "index.d.ts",
+    "tsconfig.json"
+  ],
   "scripts": {
     "build": "npx wrangler pages functions build --plugin --outdir=dist",
     "prepare": "npm run build"
   },
-  "dependencies": {
-    "pirsch-sdk": "^2.4.0"
-  },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20240320.1",
-    "@types/node": "^20.11.30"
+    "@cloudflare/workers-types": "^4.20250109.0",
+    "@types/node": "^22",
+    "wrangler": "^3.101.0"
   },
-  "keywords": ["cloudflare", "pages", "plugin", "pirsch", "analytics"],
+  "keywords": [
+    "cloudflare",
+    "pages",
+    "plugin",
+    "pirsch",
+    "analytics"
+  ],
   "author": "solaasan",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/solaasan/pirsch-analytics.git"
   }
-} 
+}
