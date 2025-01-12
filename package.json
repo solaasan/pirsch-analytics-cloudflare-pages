@@ -1,5 +1,5 @@
 {
-  "name": "@solaasan/pirsch-analytics",
+  "name": "@solaasan/pirsch-analytics-cloudflare-pages",
   "version": "1.0.0",
   "description": "Cloudflare Pages plugin for Pirsch Analytics",
   "main": "dist/index.js",
@@ -29,6 +29,6 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/solaasan/pirsch-analytics.git"
+    "url": "git+https://github.com/solaasan/pirsch-analytics-cloudflare-pages.git"
   }
 }

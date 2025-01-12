@@ -34,26 +34,46 @@ const MAX_HITS_PER_WINDOW = 100;
 let hitRequestCount = 0;
 let lastHitRequest = Date.now();
 
+interface BatchedHits {
+  hits: PirschHitPayload[];
+  lastUpdate: number;
+}
+
+// Adjust batch settings based on environment
+const BATCH_SIZE = 3; // Reduced from 10 for easier testing
+const BATCH_WINDOW_MS = 5000; // Reduced from 10s to 5s for easier testing
+
+// Development-only in-memory storage
+const DEV_STORAGE = new Map<string, BatchedHits>();
+
 async function getAccessToken(
   clientId: string,
   clientSecret: string
 ): Promise<string> {
+  // Check if we have a valid cached token with 5 minute buffer
+  if (
+    cachedToken &&
+    tokenExpiresAt &&
+    tokenExpiresAt > new Date(Date.now() + 300000)
+  ) {
+    return cachedToken;
+  }
+
   // Rate limiting for token requests
   const now = Date.now();
   if (now - lastTokenRequest < TOKEN_RATE_LIMIT_WINDOW) {
     tokenRequestCount++;
     if (tokenRequestCount > 5) {
-      // Max 5 requests per minute
+      // If we hit the rate limit but have a token that's not completely expired, use it
+      if (cachedToken && tokenExpiresAt && tokenExpiresAt > new Date()) {
+        console.warn("Using existing token due to rate limit");
+        return cachedToken;
+      }
       throw new Error("Token request rate limit exceeded");
     }
   } else {
     tokenRequestCount = 1;
     lastTokenRequest = now;
-  }
-
-  // Check if we have a valid cached token
-  if (cachedToken && tokenExpiresAt && tokenExpiresAt > new Date()) {
-    return cachedToken;
   }
 
   let lastError: Error | null = null;
@@ -99,6 +119,12 @@ async function getAccessToken(
     }
   }
 
+  // If we have a cached token that's not completely expired, use it as fallback
+  if (cachedToken && tokenExpiresAt && tokenExpiresAt > new Date()) {
+    console.warn("Using existing token after request failure");
+    return cachedToken;
+  }
+
   throw lastError || new Error("Failed to get access token after retries");
 }
 
@@ -108,21 +134,37 @@ function validateHitPayload(payload: PirschHitPayload): boolean {
     // Validate URL
     new URL(payload.url);
 
-    // Validate IP format (basic check)
-    if (
-      !/^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(payload.ip) &&
-      payload.ip !== "0.0.0.0"
-    ) {
-      return false;
+    // Validate IP format - allow IPv4, IPv6, and special cases
+    if (payload.ip !== "0.0.0.0") {
+      // Basic IPv4 check
+      const ipv4Regex = /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/;
+      // Basic IPv6 check
+      const ipv6Regex =
+        /^([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$|^::1$|^([0-9a-fA-F]{1,4}:){1,7}:|^[0-9a-fA-F]{1,4}::$/;
+      // Check if it's a valid Cloudflare IPv4 or IPv6
+      if (
+        !ipv4Regex.test(payload.ip) &&
+        !ipv6Regex.test(payload.ip) &&
+        !payload.ip.includes(":")
+      ) {
+        console.error("Invalid IP format:", payload.ip);
+        return false;
+      }
     }
 
-    // Ensure required fields are present
-    if (!payload.url || !payload.ip || !payload.user_agent) {
+    // Ensure required fields are present and not empty strings
+    if (
+      !payload.url?.trim() ||
+      !payload.ip?.trim() ||
+      !payload.user_agent?.trim()
+    ) {
+      console.error("Missing required fields");
       return false;
     }
 
     return true;
-  } catch {
+  } catch (error) {
+    console.error("Validation error:", error);
     return false;
   }
 }
@@ -131,7 +173,11 @@ function validateHitPayload(payload: PirschHitPayload): boolean {
 async function getCachedHit(cacheKey: string): Promise<Response | null> {
   try {
     const cache = caches.default;
-    const response = await cache.match(cacheKey);
+    const response = await cache.match(
+      `https://${new URL(cacheKey).hostname}/__pirsch/${encodeURIComponent(
+        cacheKey
+      )}`
+    );
     return response || null;
   } catch {
     return null;
@@ -141,9 +187,90 @@ async function getCachedHit(cacheKey: string): Promise<Response | null> {
 async function cacheHit(cacheKey: string, response: Response): Promise<void> {
   try {
     const cache = caches.default;
-    await cache.put(cacheKey, response.clone());
+    const cacheResponse = new Response(response.clone().body, {
+      ...response,
+      headers: {
+        ...response.headers,
+        "Cache-Control": "public, max-age=300", // 5 minutes
+      },
+    });
+    await cache.put(
+      `https://${new URL(cacheKey).hostname}/__pirsch/${encodeURIComponent(
+        cacheKey
+      )}`,
+      cacheResponse
+    );
   } catch (error) {
     console.error("Cache error:", error);
+  }
+}
+
+async function getBatchedHits(
+  cacheKey: string,
+  env: PirschPluginArgs
+): Promise<BatchedHits | null> {
+  try {
+    if (cacheKey.includes("localhost") || cacheKey.includes("127.0.0.1")) {
+      return DEV_STORAGE.get(cacheKey) || null;
+    }
+    const kv = env["PIRSCH_KV"] as KVNamespace;
+    const data = await kv.get(cacheKey, "json");
+    return data as BatchedHits | null;
+  } catch {
+    return null;
+  }
+}
+
+async function storeBatchedHits(
+  cacheKey: string,
+  batch: BatchedHits,
+  env: PirschPluginArgs
+): Promise<void> {
+  try {
+    if (cacheKey.includes("localhost") || cacheKey.includes("127.0.0.1")) {
+      DEV_STORAGE.set(cacheKey, batch);
+      return;
+    }
+    const kv = env["PIRSCH_KV"] as KVNamespace;
+    await kv.put(cacheKey, JSON.stringify(batch), {
+      expirationTtl: 60 * 60, // 1 hour expiration
+    });
+  } catch (error) {
+    console.error("Batch storage error:", error);
+  }
+}
+
+async function sendBatchedHits(
+  hits: PirschHitPayload[],
+  authHeader: string
+): Promise<void> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+  try {
+    console.log(`Sending batch of ${hits.length} hits to Pirsch...`);
+    const response = await fetch("https://api.pirsch.io/api/v1/hit/batch", {
+      method: "POST",
+      headers: {
+        Authorization: authHeader,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(hits),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(
+        `Failed to send batch: ${response.status} - ${errorText}`
+      );
+    }
+    console.log("Batch sent successfully!");
+  } catch (error) {
+    console.error("Failed to send batched hits:", error);
+    // On failure, we'll just let the hits be processed again
   }
 }
 
@@ -242,38 +369,80 @@ export const onRequest: PagesFunction<unknown, any, PirschPluginArgs> = async (
       return response;
     }
 
-    // Check cache before sending hit
-    const cacheKey = `pirsch-hit:${payload.url}:${payload.ip}:${Math.floor(
+    // Check individual hit cache to prevent duplicates
+    const hitCacheKey = `${request.url}/__pirsch/hit/${payload.ip}/${Math.floor(
       Date.now() / 300000
     )}`; // 5-minute window
-    const cachedResponse = await getCachedHit(cacheKey);
-    if (cachedResponse) {
+    const cachedHit = await getCachedHit(hitCacheKey);
+    if (cachedHit) {
       if (isDev) console.log("Using cached hit response");
       return response;
     }
 
-    // Send tracking data to Pirsch with timeout
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
+    // Try to add to batch
+    const BATCH_KEY = "current-batch";
+    let batch = await getBatchedHits(BATCH_KEY, env);
 
-    const trackingResponse = await fetch("https://api.pirsch.io/api/v1/hit", {
-      method: "POST",
-      headers,
-      body: JSON.stringify(payload),
-      signal: controller.signal,
-    });
+    if (!batch) {
+      batch = { hits: [], lastUpdate: Date.now() };
+      if (isDev) console.log("Creating new batch");
+    } else if (isDev) {
+      console.log(
+        `Found existing batch with ${batch.hits.length} hits (last update: ${
+          Date.now() - batch.lastUpdate
+        }ms ago)`
+      );
+    }
 
-    clearTimeout(timeoutId);
-
-    if (!trackingResponse.ok) {
-      const errorText = await trackingResponse.text();
-      console.error("Pirsch tracking failed:", errorText);
-    } else {
-      // Cache successful hit
-      await cacheHit(cacheKey, trackingResponse);
+    // Check if we should send the current batch due to time
+    const timeSinceLastUpdate = Date.now() - batch.lastUpdate;
+    if (timeSinceLastUpdate >= BATCH_WINDOW_MS && batch.hits.length > 0) {
       if (isDev) {
-        console.log("Pirsch tracking successful!");
+        console.log(
+          `Time window reached (${timeSinceLastUpdate}ms), sending batch of ${batch.hits.length} hits...`
+        );
       }
+      await sendBatchedHits(batch.hits, authHeader);
+      batch = { hits: [], lastUpdate: Date.now() };
+    }
+
+    // Add the new hit to the batch
+    batch.hits.push(payload);
+    // Only update the lastUpdate time when creating a new batch
+    if (batch.hits.length === 1) {
+      batch.lastUpdate = Date.now();
+    }
+
+    // If we've reached batch size, send the batch
+    if (batch.hits.length >= BATCH_SIZE) {
+      if (isDev) {
+        console.log(
+          `Batch size reached: ${batch.hits.length}/${BATCH_SIZE} hits`
+        );
+      }
+      await sendBatchedHits(batch.hits, authHeader);
+      batch = { hits: [], lastUpdate: Date.now() };
+    } else if (isDev) {
+      console.log(`Waiting for more hits:
+        - Current batch size: ${batch.hits.length}/${BATCH_SIZE}
+        - Time since first hit: ${
+          Date.now() - batch.lastUpdate
+        }ms/${BATCH_WINDOW_MS}ms`);
+    }
+
+    // Store updated batch
+    await storeBatchedHits(BATCH_KEY, batch, env);
+
+    // Cache the individual hit to prevent duplicates
+    const trackingResponse = new Response(JSON.stringify({ status: "queued" }));
+    await cacheHit(hitCacheKey, trackingResponse);
+
+    if (isDev) {
+      console.log(
+        `Hit ${batch.hits.length === 1 ? "queued" : "added to batch"} (${
+          batch.hits.length
+        } hits in current batch)`
+      );
     }
   } catch (error) {
     console.error(
