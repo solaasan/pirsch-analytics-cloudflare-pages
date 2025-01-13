@@ -1,6 +1,6 @@
 {
   "name": "@solaasan/pirsch-analytics-cloudflare-pages",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Cloudflare Pages plugin for Pirsch Analytics",
   "main": "dist/index.js",
   "types": "index.d.ts",
